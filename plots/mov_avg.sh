@@ -13,7 +13,9 @@ pushd $DIR_NAME
 [ -d $OUT_DIR ] || mkdir $OUT_DIR
 for file in *.dat; do
 	[ -f "$file" ] || break
-	cat $file | mavg > $(echo $OUT_DIR/"${file%.*}".dat)
+	OUTPUT_FILE=$(echo $OUT_DIR/"${file%.*}".dat)
+	yes "0.0" | head -n $((RANGE-1)) > $OUTPUT_FILE
+	cat $file | mavg >> $OUTPUT_FILE
 	# echo "${file%.*}".dat
 done
 popd

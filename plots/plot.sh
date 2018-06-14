@@ -15,6 +15,7 @@ plot() {
 	echo "set term $FORMAT size 960, 600"
 	echo "set title '$TITLE'"
 	echo "set grid"
+	echo "set offsets graph 0, graph 0, graph 0.1, graph 0.1"
 	echo "set xlabel 'Attempt'"
 	echo "set ylabel 'Reward'"
 	echo "set label 1 '{/Symbol s}=$STD_DEV'"
