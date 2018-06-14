@@ -9,16 +9,16 @@ from pysc2.lib import actions
 from pysc2.lib import features
 
 # feature views
-_AI_RELATIVE = features.SCREEN_FEATURES.player_relative.index
-_AI_SELECTED = features.SCREEN_FEATURES.selected.index
+_BOT_FEATURES_VIEW_INDEX = features.SCREEN_FEATURES.player_relative.index
+_SELECTED_BOT_FEATURES_VIEW_INDEX = features.SCREEN_FEATURES.selected.index
 
 # actions
 _NO_OP = actions.FUNCTIONS.no_op.id
 _MOVE_SCREEN = actions.FUNCTIONS.Attack_screen.id
 _SELECT_ARMY = actions.FUNCTIONS.select_army.id
 _SELECT_POINT = actions.FUNCTIONS.select_point.id
-_MOVE_RAND = 1000
-_MOVE_MIDDLE = 2000
+_MOVE_RAND = 1700
+_MOVE_MIDDLE = 1701
 
 # constants
 _BACKGROUND = 0
@@ -30,10 +30,9 @@ _SELECT_ALL = [0]
 _NOT_QUEUED = [0]
 
 # q-learning
-EPS_START = 0.9
-EPS_END = 0.025
-EPS_DECAY = 10000
-
+GAMMA = 0.9
+EPSILON_START = 0.1
+EPSILON_END = 0.025
 possible_actions = [
     _NO_OP,
     _SELECT_ARMY,
@@ -42,36 +41,53 @@ possible_actions = [
     _MOVE_RAND,
     _MOVE_MIDDLE
 ]
+MAX_EPISODES = 35
+MAX_STEPS = 400
+EPS_DECAY = MAX_EPISODES * MAX_STEPS
+
+# environment
+FLAGS = flags.FLAGS
+FLAGS(['run_sc2'])
+VISUALIZATION = False
+SAVE_REPLAY = False
 
 
-def get_eps_threshold(steps_done):
-    return EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps_done / EPS_DECAY)
+def get_alpha(steps_done):
+    return EPSILON_END + (EPSILON_START - EPSILON_END) * math.exp(-1. * steps_done / (0.7 * EPS_DECAY))
 
 
-def get_state(obs):
-    ai_view = obs.observation['screen'][_AI_RELATIVE]
-    beaconxs, beaconys = (ai_view == _AI_NEUTRAL).nonzero()
-    marinexs, marineys = (ai_view == _AI_SELF).nonzero()
-    marinex, mariney = marinexs.mean(), marineys.mean()
+def get_state(obs, beacon_position_x, beacon_position_y):
+    ai_view = obs.observation['screen'][_BOT_FEATURES_VIEW_INDEX]
+    return is_bot_selected(obs), is_bot_on_beacon(ai_view, beacon_position_x, beacon_position_y)
 
-    marine_on_beacon = np.min(beaconxs) <= marinex <= np.max(beaconxs) and np.min(beaconys) <= mariney <= np.max(beaconys)
 
-    ai_selected = obs.observation['screen'][_AI_SELECTED]
-    marine_selected = int((ai_selected == 1).any())
+def is_bot_on_beacon(ai_view, beacon_position_x, beacon_position_y):
+    bot_position_x_array, bot_position_y_array = (ai_view == _AI_SELF).nonzero()
+    bot_position_mean_x, bot_position_mean_y = bot_position_x_array.mean(), bot_position_y_array.mean()
+    marine_on_beacon = np.min(beacon_position_x) <= bot_position_mean_x <= np.max(beacon_position_x) and \
+                       np.min(beacon_position_y) <= bot_position_mean_y <= np.max(beacon_position_y)
+    return int(marine_on_beacon)
 
-    return (marine_selected, int(marine_on_beacon)), [beaconxs, beaconys]
+
+def is_bot_selected(obs):
+    ai_selected = obs.observation['screen'][_SELECTED_BOT_FEATURES_VIEW_INDEX]
+    return int((ai_selected == 1).any())
+
+
+def get_beacon_location(obs):
+    ai_view = obs.observation['screen'][_BOT_FEATURES_VIEW_INDEX]
+    beacon_x, beacon_y = (ai_view == _AI_NEUTRAL).nonzero()
+    return [beacon_x, beacon_y]
 
 
 class QTable(object):
-    def __init__(self, actions, lr=0.01, reward_decay=0.9):
-        self.lr = lr
-        self.actions = actions
-        self.reward_decay = reward_decay
+    def __init__(self):
+        self.actions = possible_actions
         self.states_list = set()
         self.q_table = np.zeros((0, len(possible_actions)))
 
-    def get_action_index(self, state):
-        if np.random.rand() < get_eps_threshold(steps):
+    def get_action_index(self, state, steps):
+        if np.random.rand() < get_alpha(steps):
             return np.random.randint(0, len(self.actions))
         else:
             if state not in self.states_list:
@@ -84,23 +100,20 @@ class QTable(object):
         self.q_table = np.vstack([self.q_table, np.zeros((1, len(possible_actions)))])
         self.states_list.add(state)
 
-    def update_qtable(self, state, next_state, action, reward):
+    def update_q_table(self, state, next_state, action_index, reward, steps):
         if state not in self.states_list:
             self.add_state(state)
         if next_state not in self.states_list:
             self.add_state(next_state)
-        # how much reward
         state_idx = list(self.states_list).index(state)
+        q_next_state, q_state = self.extract_states(action_index, next_state, state_idx)
+        self.q_table[state_idx, action_index] += get_alpha(steps) * ((reward + (GAMMA * q_next_state)) - q_state)
+
+    def extract_states(self, action_index, next_state, state_idx):
         next_state_idx = list(self.states_list).index(next_state)
-        # calculate q labels
-        q_state = self.q_table[state_idx, action]
+        q_state = self.q_table[state_idx, action_index]
         q_next_state = self.q_table[next_state_idx].max()
-        q_targets = reward + (self.reward_decay * q_next_state)
-        # calculate our loss
-        loss = q_targets - q_state
-        # update the q value for this state/action pair
-        self.q_table[state_idx, action] += self.lr * loss
-        return loss
+        return q_next_state, q_state
 
 
 def select_bot():
@@ -117,17 +130,17 @@ def move_into_map_middle():
 
 
 def move_to_random_position(beacon_pos):
-    beacon_x, beacon_y = beacon_pos[0].max(), beacon_pos[1].max()
-    movex, movey = np.random.randint(beacon_x, 64), np.random.randint(beacon_y, 64)
-    return actions.FunctionCall(_MOVE_SCREEN, [_NOT_QUEUED, [movey, movex]])
+    beacon_position_max_x, beacon_position_max_y = beacon_pos[0].max(), beacon_pos[1].max()
+    random_x, random_y = np.random.randint(beacon_position_max_x, 64), np.random.randint(beacon_position_max_y, 64)
+    return actions.FunctionCall(_MOVE_SCREEN, [_NOT_QUEUED, [random_y, random_x]])
 
 
 def deselect_bot(obs):
-    ai_view = obs.observation['screen'][_AI_RELATIVE]
-    backgroundxs, backgroundys = (ai_view == _BACKGROUND).nonzero()
-    point = np.random.randint(0, len(backgroundxs))
-    backgroundx, backgroundy = backgroundxs[point], backgroundys[point]
-    return actions.FunctionCall(_SELECT_POINT, [_NOT_QUEUED, [backgroundy, backgroundx]])
+    ai_view = obs.observation['screen'][_BOT_FEATURES_VIEW_INDEX]
+    background_x_array, background_y_array = (ai_view == _BACKGROUND).nonzero()
+    random_point = np.random.randint(0, len(background_x_array))
+    background_x, background_y = background_x_array[random_point], background_y_array[random_point]
+    return actions.FunctionCall(_SELECT_POINT, [_NOT_QUEUED, [background_y, background_x]])
 
 
 def do_nothing():
@@ -153,47 +166,37 @@ def select_action(action_index, beacon_pos, obs, state):
 class QAgent(base_agent.BaseAgent):
     def __init__(self):
         super(QAgent, self).__init__()
-        self.q_table = QTable(possible_actions)
+        self.q_table = QTable()
 
     def step(self, obs):
         super(QAgent, self).step(obs)
-        state, beacon_pos = get_state(obs)
-        action_index = self.q_table.get_action_index(state)
+        beacon_pos = get_beacon_location(obs)
+        state = get_state(obs, beacon_pos[0], beacon_pos[1])
+        action_index = self.q_table.get_action_index(state, self.steps)
         action = select_action(action_index, beacon_pos, obs, state)
         return state, action_index, action
 
 
-FLAGS = flags.FLAGS
-FLAGS(['run_sc2'])
+def main():
+    with sc2_env.SC2Env(agent_race=None, bot_race=None, difficulty=None, map_name=maps.get('MoveToBeacon'),
+                        visualize=VISUALIZATION) as env, \
+            open("results", "a") as results_file:
+        agent = QAgent()
+        for i in range(MAX_EPISODES):
+            episode_reward = 0
+            obs = env.reset()
+            for j in range(MAX_STEPS):
+                state, action_index, action = agent.step(obs[0])
+                obs = env.step(actions=[action])
+                beacon_position = get_beacon_location(obs[0])
+                next_state = get_state(obs[0], beacon_position[0], beacon_position[1])
+                reward = obs[0].reward
+                episode_reward += reward
+                agent.q_table.update_q_table(state, next_state, action_index, reward, agent.steps)
+            results_file.write('{}\n'.format(episode_reward))
+        if SAVE_REPLAY:
+            env.save_replay(QAgent.__name__)
 
-viz = False
-save_replay = False
-MAX_EPISODES = 35
-MAX_STEPS = 400
-steps = 0
 
-# create a map
-beacon_map = maps.get('MoveToBeacon')
-
-# create an envirnoment
-with sc2_env.SC2Env(agent_race=None,
-                    bot_race=None,
-                    difficulty=None,
-                    map_name=beacon_map,
-                    visualize=viz) as env:
-    agent = QAgent()
-    for i in range(MAX_EPISODES):
-        print 'Starting episode {}'.format(i)
-        ep_reward = 0
-        obs = env.reset()
-        for j in range(MAX_STEPS):
-            steps += 1
-            state, action, func = agent.step(obs[0])
-            obs = env.step(actions=[func])
-            next_state, _ = get_state(obs[0])
-            reward = obs[0].reward
-            ep_reward += reward
-            loss = agent.q_table.update_qtable(state, next_state, action, reward)
-        print 'Episode Reward: {}, Explore threshold: {}, Q loss: {}'.format(ep_reward, get_eps_threshold(steps), loss)
-    if save_replay:
-        env.save_replay(QAgent.__name__)
+if __name__ == "__main__":
+    main()
