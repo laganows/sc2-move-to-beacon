@@ -10,7 +10,7 @@ plot() {
 	PLOT_FILE=$(echo $OUT_DIR/"${FILE%.*}".$FORMAT)
 	# OUT_FILE=$(echo ../"${FILE%.*}".txt)
 	# TITLE=$(cat $OUT_FILE | head -n 1)
-	TITLE=$FILE
+	TITLE=$(echo "${FILE%.*}")
 	STD_DEV=$(cat stddev/$FILE)
 	echo "set term $FORMAT size 960, 600"
 	echo "set title '$TITLE'"

@@ -1,3 +1,10 @@
+# Plot generators
+
+## Prerequisites
+* Scala
+* Gnuplot
+* Bash
+
 ## How to generate plots
 
 1. Put your data to `input` directory
@@ -19,4 +26,4 @@ Example content of `input/*.dat` file
 ./run_all.sh
 ```
 
-3. your plots should be present in `input/plots/` directory
+3. your plots should be present in `input/plot/` directory
